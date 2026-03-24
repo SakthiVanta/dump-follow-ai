@@ -1,0 +1,88 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+site/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Test, coverage, and type-check caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+
+# Logs and local runtime output
+*.log
+logs/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.code-workspace
+*.suo
+*.user
+*.userossc
+*.sln.docstates
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Notebook artifacts
+.ipynb_checkpoints/
+
+# Robot and training outputs
+runs/
+wandb/
+
+# Model weights and exports
+models/*.pt
+models/trained/
+*.onnx
+*.engine
+*.trt
+*.torchscript
+*.tflite
+*.pb
+
+# Large local model copies at repo root
+yolov8n.pt
+yolo11*.pt
+
+# Data directories that are typically local/generated
+data/raw/
+data/raw_images/
+data/training_images/
+data/downloads/
+data/auto_dataset/
+data/yolo_dataset/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

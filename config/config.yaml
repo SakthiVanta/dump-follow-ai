@@ -1,0 +1,65 @@
+robot:
+  name: "TinyAIRobot"
+  version: "1.0.0"
+  log_level: "INFO"
+
+vision:
+  model_path: "models/yolov8n.pt"
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  target_class: "person"
+  frame_width: 320
+  frame_height: 240
+  camera_id: 0
+  fps_target: 30
+  tracker: "bytetrack"           # bytetrack | deepsort | none
+
+control:
+  base_speed: 100
+  max_speed: 200
+  min_speed: -200
+  pid:
+    kp: 0.4
+    ki: 0.01
+    kd: 0.1
+    integral_limit: 500
+    output_limit: 150
+  safe_distance_ratio: 0.35     # bbox height / frame height — stop if closer
+  search_turn_speed: 50         # speed when rotating to find target
+  lost_target_timeout_s: 2.0   # seconds before entering search mode
+
+motor:
+  invert_left: false
+  invert_right: false
+  pwm_frequency: 1000
+
+serial:
+  port: "/dev/ttyUSB0"
+  baudrate: 115200
+  timeout_s: 1.0
+  mock: false                    # true = log commands instead of sending
+
+voice:
+  enabled: true
+  engine: "google"               # google | whisper
+  whisper_model: "base"
+  language: "en-US"
+  energy_threshold: 300
+  phrase_time_limit_s: 5
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  reload: false
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
+
+training:
+  data_dir: "data"
+  model_base: "yolov8n.pt"
+  epochs: 100
+  batch_size: 16
+  image_size: 640
+  output_dir: "models/trained"
+  augment: true

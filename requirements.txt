@@ -1,0 +1,50 @@
+# Core Vision
+ultralytics>=8.3.0
+# IMPORTANT: must install AFTER albumentations so the GUI build wins.
+# albumentations depends on opencv-python-headless (no imshow) — we override it.
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Deep Learning (install CPU or CUDA build separately if needed)
+# torch and torchvision are installed by ultralytics automatically;
+# pin here only if you need a specific build:
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# Web API
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-multipart>=0.0.9
+websockets>=12.0
+
+# Serial Communication
+pyserial>=3.5
+# pyserial-asyncio>=0.6   # optional: only needed for async serial
+
+# Voice / STT  (all optional — robot runs without voice)
+SpeechRecognition>=3.10.0
+# openai-whisper>=20231117  # large download; uncomment for offline STT
+# PyAudio>=0.2.14           # requires PortAudio system lib; install manually if needed
+
+# Async
+anyio>=4.4.0
+
+# Tracking  (optional — ByteTrack built into ultralytics; DeepSORT is extra)
+# deep-sort-realtime>=1.3.2
+# filterpy>=1.4.5
+# lapx>=0.5.5               # lap replacement that works on Python 3.12+
+
+# Utilities
+numpy>=1.24.0
+scipy>=1.11.0
+PyYAML>=6.0
+python-dotenv>=1.0.0
+click>=8.1.0
+rich>=13.0.0
+loguru>=0.7.0
+
+# Training
+albumentations>=1.4.0
+# pycocotools>=2.0.7   # requires C build tools; install separately on Windows
