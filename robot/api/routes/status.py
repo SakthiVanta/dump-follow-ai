@@ -18,6 +18,8 @@ async def get_status(request: Request) -> dict:
         "mode": state.current_mode.value,
         "frame_count": state.frame_count,
         "serial": state.serial.stats,
+        "motion_source": state.motion_source,
+        "motion": state.last_motion.to_dict(),
         "last_command": (
             state.last_command.to_dict() if state.last_command else None
         ),

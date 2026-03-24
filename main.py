@@ -148,6 +148,30 @@ def train(
     click.echo(f"Training complete. Best weights: {best}")
 
 
+@cli.command("train-svsp")
+@click.option("--output", default="models/svsp.pt", help="Path to save SVSP model")
+@click.option("--samples", default=2000, type=int, help="Synthetic training sample count")
+@click.option("--sequence-length", default=8, type=int, help="BBox history length")
+@click.option("--epochs", default=120, type=int, help="Training epochs")
+def train_svsp(output: str, samples: int, sequence_length: int, epochs: int) -> None:
+    """Train the SVSP direction model from synthetic bbox sequences."""
+    from robot.config import MotionModelConfig
+    from robot.vision.svsp import train_svsp_model
+
+    cfg = MotionModelConfig(
+        enabled=True,
+        model_path=output,
+        train_samples=samples,
+        sequence_length=sequence_length,
+        epochs=epochs,
+    )
+    result = train_svsp_model(cfg)
+    click.echo(
+        f"SVSP training complete: {result.model_path} "
+        f"(accuracy={result.accuracy:.3f}, samples={result.samples})"
+    )
+
+
 @cli.command()
 @click.option("--camera", default=0, type=int, help="Webcam index")
 @click.option("--model", default="yolov8n.pt", help="YOLO model path")
@@ -208,10 +232,33 @@ def demo(
         "auto":    True,     # True = auto-pick largest person
         "wheel_l": 0.0,      # stripe offset for left wheel animation
         "wheel_r": 0.0,
+        "motion":  None,
+        "motion_source": "SVSP" if Path("models/svsp.pt").exists() else "HEURISTIC",
+        "buttons": {},
     }
+    motion_tracker = _build_motion_tracker(
+        frame_width=fw,
+        frame_height=fh,
+        enabled=Path("models/svsp.pt").exists(),
+        model_path="models/svsp.pt",
+    )
 
     def _mouse(event, x, y, flags, _):
         if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        lock_btn = state["buttons"].get("lock")
+        auto_btn = state["buttons"].get("auto")
+        if lock_btn and _point_in_rect(x, y, lock_btn):
+            selected = _pick_best_target(state["detections"], all_objects)
+            if selected is not None:
+                state["locked"] = selected
+                state["auto"] = False
+                click.echo(f"\n  Locked via button -> {selected.label} conf={selected.confidence:.2f}")
+            return
+        if auto_btn and _point_in_rect(x, y, auto_btn):
+            state["locked"] = None
+            state["auto"] = True
+            click.echo("\n  Auto mode ON")
             return
         # Only check click in camera area (above panel)
         if y >= fh:
@@ -245,16 +292,7 @@ def demo(
 
             # ── Select target ─────────────────────────────────────────
             if state["auto"]:
-                auto_candidates = (
-                    detections
-                    if all_objects
-                    else [d for d in detections if d.label == "person"]
-                )
-                target = (
-                    max(auto_candidates, key=lambda d: d.area)
-                    if auto_candidates
-                    else None
-                )
+                target = _pick_best_target(detections, all_objects)
             else:
                 # Re-match locked target by track id first, then centroid + label
                 target = _rematch(state["locked"], detections)
@@ -262,6 +300,7 @@ def demo(
 
             # ── PID + motor command ───────────────────────────────────
             cmd = follower.update(target, fw, fh)
+            state["motion"] = motion_tracker.update(target)
 
             # ── Animate wheel offsets ─────────────────────────────────
             state["wheel_l"] = (state["wheel_l"] + cmd.left  * 0.08) % 20
@@ -269,7 +308,17 @@ def demo(
 
             # ── Build output frame ────────────────────────────────────
             canvas = np.zeros((OUT_H, fw, 3), dtype=np.uint8)
-            annotated = _draw_camera_view(frame.copy(), detections, target, fw, fh, state["auto"])
+            annotated = _draw_camera_view(
+                frame.copy(),
+                detections,
+                target,
+                fw,
+                fh,
+                state["auto"],
+                state["motion"],
+                state["motion_source"],
+                state,
+            )
             canvas[:fh] = annotated
 
             panel = _draw_robot_panel(fw, PANEL_H, cmd, state["wheel_l"], state["wheel_r"],
@@ -283,6 +332,7 @@ def demo(
             click.echo(
                 f"\r  FPS {fps:4.1f} | {follower.mode.value:<14} | "
                 f"target: {'%-12s' % (target.label if target else 'NONE')} | "
+                f"motion={state['motion'].summary if state['motion'] else 'stationary':<18} | "
                 f"err={err:+6.1f}px | L={cmd.left:+4d} R={cmd.right:+4d}",
                 nl=False,
             )
@@ -342,9 +392,19 @@ def _rematch(locked, detections):
     return best if best_d < 100 ** 2 else None   # lost if > 100px jump
 
 
+def _pick_best_target(detections, all_objects):
+    candidates = detections if all_objects else [d for d in detections if d.label == "person"]
+    return max(candidates, key=lambda d: d.area) if candidates else None
+
+
+def _point_in_rect(x, y, rect):
+    rx, ry, rw, rh = rect
+    return rx <= x <= rx + rw and ry <= y <= ry + rh
+
+
 # ── Camera view overlay ────────────────────────────────────────────────────────
 
-def _draw_camera_view(frame, detections, target, fw, fh, auto_mode):
+def _draw_camera_view(frame, detections, target, fw, fh, auto_mode, motion, motion_source, state):
     import cv2
     cx_frame = fw // 2
 
@@ -383,9 +443,40 @@ def _draw_camera_view(frame, detections, target, fw, fh, auto_mode):
     badge = "AUTO" if auto_mode else "LOCKED"
     bcol  = (0, 200, 80) if auto_mode else (0, 160, 255)
     cv2.putText(frame, badge, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, bcol, 2)
-    cv2.putText(frame, "CLICK box to lock", (8, 42),
+    cv2.putText(frame, "YOLO: OBJECT DETECTION", (8, 42),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+    cv2.putText(frame, f"{motion_source}: DIRECTION DETECTION", (8, 58),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+    if motion is not None:
+        cv2.putText(frame, f"MOTION: {motion.summary.upper()}", (8, 76),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
+
+    lock_rect = (fw - 150, 10, 64, 28)
+    auto_rect = (fw - 76, 10, 64, 28)
+    state["buttons"]["lock"] = lock_rect
+    state["buttons"]["auto"] = auto_rect
+    _draw_button(frame, lock_rect, "LOCK", active=not auto_mode)
+    _draw_button(frame, auto_rect, "AUTO", active=auto_mode)
     return frame
+
+
+def _draw_button(frame, rect, label, active):
+    import cv2
+
+    x, y, w, h = rect
+    fill = (0, 160, 255) if active else (70, 70, 70)
+    edge = (220, 220, 220)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), fill, -1)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), edge, 1)
+    cv2.putText(
+        frame,
+        label,
+        (x + 10, y + 19),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (10, 10, 10) if active else (230, 230, 230),
+        1,
+    )
 
 
 # ── Robot panel ────────────────────────────────────────────────────────────────
@@ -527,6 +618,19 @@ def _annotate(frame, detections) -> "np.ndarray":
     return out
 
 
+def _build_motion_tracker(frame_width: int, frame_height: int, enabled: bool, model_path: str):
+    from robot.vision.motion import TargetMotionEstimator
+    from robot.vision.svsp import SVSPMotionPredictor, load_svsp_model
+
+    if enabled and Path(model_path).exists():
+        try:
+            model = load_svsp_model(model_path)
+            return SVSPMotionPredictor(model, frame_width=frame_width, frame_height=frame_height)
+        except Exception:
+            pass
+    return TargetMotionEstimator()
+
+
 # ---------------------------------------------------------------------------
 # Async robot loop
 # ---------------------------------------------------------------------------
@@ -548,6 +652,12 @@ async def _run_robot(cfg, voice: bool, show: bool) -> None:
 
     follower = PersonFollower(cfg.control, cfg.motor, cfg.control.pid)
     follower.mode = RobotMode.FOLLOW
+    motion_tracker = _build_motion_tracker(
+        frame_width=cfg.vision.frame_width,
+        frame_height=cfg.vision.frame_height,
+        enabled=cfg.motion_model.enabled,
+        model_path=cfg.motion_model.model_path,
+    )
 
     voice_ctrl: Optional[VoiceController] = None
     if voice and cfg.voice.enabled:
@@ -563,6 +673,16 @@ async def _run_robot(cfg, voice: bool, show: bool) -> None:
         while True:
             # --- Vision ---
             frame, detections, target = pipeline.process()
+            motion = motion_tracker.update(target)
+            cv2.putText(
+                frame,
+                f"MOTION: {motion.summary.upper()}",
+                (8, cfg.vision.frame_height - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 200, 255),
+                1,
+            )
             set_latest_frame(frame)
 
             # --- Voice intent ---

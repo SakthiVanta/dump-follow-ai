@@ -84,6 +84,16 @@ class TrainingConfig(BaseModel):
     augment: bool = True
 
 
+class MotionModelConfig(BaseModel):
+    enabled: bool = False
+    model_path: str = "models/svsp.pt"
+    sequence_length: int = 8
+    train_samples: int = 2000
+    epochs: int = 120
+    learning_rate: float = 0.15
+    synthetic_noise: float = 0.03
+
+
 class RobotMeta(BaseModel):
     name: str = "TinyAIRobot"
     version: str = "1.0.0"
@@ -99,6 +109,7 @@ class RobotConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
+    motion_model: MotionModelConfig = Field(default_factory=MotionModelConfig)
 
 
 # ---------------------------------------------------------------------------

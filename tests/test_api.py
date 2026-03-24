@@ -45,6 +45,7 @@ class TestStatusEndpoints:
         data = resp.json()
         assert "mode" in data
         assert "serial" in data
+        assert "motion" in data
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,16 @@ class TestControlEndpoints:
     def test_invalid_mode(self, client):
         resp = client.post("/api/v1/mode", json={"mode": "fly_away"})
         assert resp.status_code == 422
+
+    def test_train_svsp_endpoint(self, client):
+        resp = client.post("/api/v1/train/svsp")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "trained"
+
+    def test_disable_svsp_endpoint(self, client):
+        resp = client.post("/api/v1/model/svsp/disable")
+        assert resp.status_code == 200
+        assert resp.json()["motion_source"] == "heuristic"
 
 
 # ---------------------------------------------------------------------------
