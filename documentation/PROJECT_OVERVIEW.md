@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Tiny AI Modal Robot is a computer-vision robot project that follows a selected person or object using bounding box detection and differential wheel control.
+Tiny AI Modal Robot is a computer-vision robot system that follows a selected person or object using a two-model pipeline.
 
 The project combines:
 
-- a trained object detector
-- target tracking and selection logic
-- PID-based steering
-- motor command generation
+- `YOLO` for detection
+- tracking and target selection
+- `SVSP` for movement direction classification
+- PID-based steering and wheel control
 - API and simulator interfaces
 
 ## Main Goal
@@ -18,8 +18,38 @@ The main goal is:
 
 1. detect a target from the camera feed
 2. select the exact person or object to follow
-3. keep following that same target across frames
-4. turn the wheels according to the target movement
+3. keep following the same target across frames
+4. predict the target's movement direction
+5. steer the robot based on that target and motion information
+
+## Core Idea
+
+The system is split into three responsibilities.
+
+### 1. YOLO detects
+
+YOLO answers:
+
+- what object or person is visible
+- where it is in the frame
+
+### 2. SVSP predicts motion
+
+SVSP answers:
+
+- is the selected target moving `left`
+- `right`
+- `forward`
+- `backward`
+- or `stationary`
+
+### 3. Control code decides movement
+
+Control answers:
+
+- how to turn the robot
+- how to set left and right wheel speeds
+- when to stop or search
 
 ## High-Level Components
 
@@ -29,16 +59,19 @@ Located in [`robot/vision`](../robot/vision)
 
 Responsibilities:
 
-- read frames from the camera
+- read frames from camera
 - run YOLO detection
 - track detections across frames
-- choose the active target
+- maintain target history
+- run SVSP motion prediction
 
 Important files:
 
 - [`robot/vision/detector.py`](../robot/vision/detector.py)
 - [`robot/vision/tracker.py`](../robot/vision/tracker.py)
 - [`robot/vision/frame_pipeline.py`](../robot/vision/frame_pipeline.py)
+- [`robot/vision/motion.py`](../robot/vision/motion.py)
+- [`robot/vision/svsp.py`](../robot/vision/svsp.py)
 
 ### 2. Control
 
@@ -46,9 +79,9 @@ Located in [`robot/control`](../robot/control)
 
 Responsibilities:
 
-- calculate steering based on target offset
-- decide whether to follow, stop, search, or stay manual
-- generate left and right wheel commands
+- calculate steering from target position
+- decide follow, stop, search, manual, or idle behavior
+- convert steering into wheel commands
 
 Important files:
 
@@ -63,8 +96,8 @@ Located in [`robot/comms`](../robot/comms)
 Responsibilities:
 
 - connect to ESP32
-- send left/right motor commands
-- support mock mode for development
+- send left/right wheel commands
+- support mock mode
 
 Important files:
 
@@ -77,18 +110,18 @@ Located in [`robot/api`](../robot/api)
 
 Responsibilities:
 
-- expose status endpoints
-- allow mode changes
-- allow manual driving
-- stream camera frames
+- expose status and control endpoints
+- expose SVSP training and loading endpoints
+- stream latest video frame
 
 Important files:
 
 - [`robot/api/app.py`](../robot/api/app.py)
 - [`robot/api/state.py`](../robot/api/state.py)
 - [`robot/api/routes/control.py`](../robot/api/routes/control.py)
-- [`robot/api/routes/video.py`](../robot/api/routes/video.py)
 - [`robot/api/routes/status.py`](../robot/api/routes/status.py)
+- [`robot/api/routes/video.py`](../robot/api/routes/video.py)
+- [`robot/api/routes/model.py`](../robot/api/routes/model.py)
 
 ### 5. Training
 
@@ -96,16 +129,17 @@ Located in [`training`](../training)
 
 Responsibilities:
 
-- convert annotation formats into YOLO format
-- augment images
-- fine-tune a custom model
-- export trained models
+- prepare YOLO detector datasets
+- augment detector datasets
+- fine-tune detector weights
+- train the SVSP motion model
 
 Important files:
 
 - [`training/dataset.py`](../training/dataset.py)
 - [`training/augmentation.py`](../training/augmentation.py)
 - [`training/train.py`](../training/train.py)
+- [`robot/vision/svsp.py`](../robot/vision/svsp.py)
 
 ## Runtime Modes
 
@@ -115,33 +149,44 @@ The application supports these modes from [`main.py`](../main.py):
 - `api`
 - `demo`
 - `train`
+- `train-svsp`
 - `test-detect`
+
+## Demo Experience
+
+The demo now includes:
+
+- YOLO detection overlay
+- SVSP direction overlay when `svsp.pt` is present
+- lock and auto buttons on the camera screen
+- visual target tracking
+- virtual wheel animation
+
+This makes the current app easier to test without hardware.
 
 ## How the Project Is Intended to Evolve
 
-The current codebase already supports:
+The current codebase now supports:
 
-- running with pretrained YOLO weights
-- building a custom dataset
-- fine-tuning a custom model
+- running a YOLO detector
+- training a custom YOLO detector
+- training and loading an SVSP direction model
+- switching between heuristic motion and SVSP motion
 
-The recommended production path is:
+Recommended production path:
 
-1. collect real robot images
-2. auto-label them
-3. correct labels
-4. train a custom model
-5. deploy the new model in the robot config
+1. collect real robot-camera images
+2. train a better detector if needed
+3. collect real tracked motion sequences
+4. train a better SVSP model from real movement data
+5. later add gesture or hand-lock AI
 
-## Core Engineering Principle
+## Engineering Principle
 
-The model detects.
+The detector finds the target.
 
-The code decides.
+The motion model predicts direction.
 
-That means:
+The control code drives the robot.
 
-- the model provides where the target is
-- the control code decides how the robot should move
-
-Both parts are required for the full robot behavior.
+All three are required for the full robot behavior.

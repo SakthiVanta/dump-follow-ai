@@ -1,240 +1,185 @@
 # Tiny AI Modal Robot
 
-Tiny AI Modal Robot is a vision-guided robot project that detects a person or object in the camera feed, selects a target, and converts the bounding box position into left and right wheel commands.
+Tiny AI Modal Robot is a vision-based robot project that now uses two AI layers:
 
-The project is built from two parts working together:
+- `YOLO` for object or person detection and bounding boxes
+- `SVSP` for motion direction prediction from bounding-box history
 
-- A trained detection model, based on YOLO, that finds the target and returns bounding boxes
-- Control code that turns the target position into robot steering, motor commands, API responses, and simulator output
+The system selects a target, follows that same target across frames, predicts whether it is moving `left`, `right`, `forward`, `backward`, or `stationary`, and converts that into robot steering and wheel behavior.
 
-## What This Project Does
+## Current Architecture
 
-- Detects objects or people from a live camera feed
-- Tracks detections across frames
-- Selects a target automatically or from user choice
-- Computes horizontal error from the bounding box center
-- Converts that error into differential wheel speeds
-- Sends commands to an ESP32 motor controller or runs in mock mode
-- Supports simulator mode, API mode, training mode, and full robot mode
+This project now supports a two-model flow:
 
-## Core Idea
+1. `YOLO` detects the target and returns bounding boxes
+2. tracking keeps the same target across frames
+3. target selection chooses the active person or object
+4. `SVSP` reads bounding-box history and predicts direction
+5. control logic converts the selected target position into wheel commands
 
-The AI model does not directly drive the wheels.
+In short:
 
-The model produces:
+- `YOLO` answers: "Where is the target?"
+- `SVSP` answers: "Which direction is the target moving?"
+- control code answers: "How should the robot move?"
 
-- `label`
-- `confidence`
-- `bounding box`
-- optional `track_id`
+## What The Project Can Do
 
-Then the control code does this:
+- detect people and objects from camera frames
+- track detections across frames
+- lock a selected target
+- predict motion direction:
+  - `left`
+  - `right`
+  - `forward`
+  - `backward`
+  - `stationary`
+- display virtual wheel movement in demo mode
+- expose API endpoints for control and model operations
+- train a custom YOLO detector
+- train and save an `SVSP` motion model to `models/svsp.pt`
 
-1. Find the selected target bounding box
-2. Compare the target center with the frame center
-3. Compute left/right steering correction with PID
-4. Convert steering into virtual wheel speeds
-5. Send motor commands to the robot
+## Runtime Modes
 
-If the selected target moves left:
+Available CLI modes in [`main.py`](./main.py):
 
-- the error becomes negative
-- the left wheel slows down
-- the right wheel speeds up
-- the robot turns left
+- `robot`
+- `api`
+- `demo`
+- `train`
+- `train-svsp`
+- `test-detect`
 
-If the selected target moves right:
+## Two-Model Flow
 
-- the error becomes positive
-- the left wheel speeds up
-- the right wheel slows down
-- the robot turns right
+### YOLO
 
-## Project Modes
+YOLO is responsible for:
 
-This project supports multiple runtime modes from [`main.py`](./main.py):
+- person or object detection
+- bounding boxes
+- confidence scores
 
-- `robot`: full autonomous loop with vision, control, and serial output
-- `api`: FastAPI server for control and status
-- `demo`: simulator with bounding boxes, target lock, and virtual wheel display
-- `train`: fine-tune a custom YOLO model
-- `test-detect`: run a quick detector sanity check
+Files:
 
-## Architecture Overview
+- [`robot/vision/detector.py`](./robot/vision/detector.py)
+- [`training/train.py`](./training/train.py)
 
-Main flow:
+### SVSP
 
-1. Camera frame enters the vision pipeline
-2. YOLO detector finds people or objects
-3. Tracker assigns persistent IDs when enabled
-4. Target selector picks either:
-   - the locked target
-   - or the largest target of the configured class
-5. Follower computes steering from target offset
-6. Motor controller converts steering into wheel speeds
-7. Serial driver sends commands to ESP32 or mock output
+SVSP is responsible for:
 
-Key modules:
+- reading bounding-box history over time
+- classifying motion direction
+- loading and saving `svsp.pt`
 
-- [`robot/vision/detector.py`](./robot/vision/detector.py): detection model wrapper
-- [`robot/vision/tracker.py`](./robot/vision/tracker.py): track continuity across frames
-- [`robot/vision/frame_pipeline.py`](./robot/vision/frame_pipeline.py): capture, detect, track, select target
-- [`robot/control/follower.py`](./robot/control/follower.py): follow logic and PID steering
-- [`robot/control/motor.py`](./robot/control/motor.py): left/right motor command generation
-- [`robot/comms/serial_driver.py`](./robot/comms/serial_driver.py): ESP32 communication
-- [`robot/api/`](./robot/api): FastAPI server and endpoints
-- [`training/`](./training): dataset prep, augmentation, and training
+Files:
 
-## Detection Model
+- [`robot/vision/svsp.py`](./robot/vision/svsp.py)
 
-By default, the application uses a pretrained YOLO model such as `yolov8n.pt`.
+### Control
 
-That means:
+Control is still handled by code:
 
-- the project already works without training from zero
-- the default detector is not custom to your environment
-- custom training is recommended for better real-world robot performance
+- target locking
+- follow behavior
+- steering correction
+- motor command generation
 
-You can fine-tune your own model using the built-in training pipeline.
+Files:
 
-## Custom Training Workflow
+- [`robot/control/follower.py`](./robot/control/follower.py)
+- [`robot/control/motor.py`](./robot/control/motor.py)
 
-This repo now supports a practical custom training path:
+## Demo Mode
 
-1. Capture raw images from the robot camera
-2. Auto-label them with a pretrained YOLO model
-3. Review and correct the labels
-4. Split and augment the dataset
-5. Fine-tune a custom detector
-6. Use the trained `best.pt` in the robot config
+The demo mode now shows on screen:
 
-### Why This Is the Best Approach
-
-Training completely from scratch is usually not the best option unless you have a very large dataset.
-
-The recommended approach is:
-
-- start from pretrained YOLO weights
-- collect images from your robot viewpoint
-- fine-tune on your own target classes and environment
-
-This gives better accuracy with much less data.
-
-## Installation
-
-### 1. Create a virtual environment
-
-```powershell
-python -m venv venv
-.\venv\Scripts\activate
-```
-
-### 2. Install dependencies
-
-```powershell
-pip install -r requirements-dev.txt
-```
-
-### 3. Download or place model weights
-
-You can use:
-
-- `yolov8n.pt`
-- `models/yolov8n.pt`
-- your own trained `best.pt`
-
-## Quick Start
-
-### Run the simulator
-
-```powershell
-python main.py demo --camera 0
-```
-
-### Run API server in mock mode
-
-```powershell
-python main.py api --mock
-```
-
-### Run full robot loop
-
-```powershell
-python main.py robot --config config/config.yaml
-```
-
-### Run a quick detection test
-
-```powershell
-python main.py test-detect --model yolov8n.pt
-```
-
-## Demo Behavior
-
-The simulator in `demo` mode shows:
-
-- camera detections
+- YOLO object detection
+- SVSP direction detection if `models/svsp.pt` exists
+- heuristic direction detection if SVSP is not available
 - selected target
-- error line from frame center to target center
-- virtual left wheel speed
-- virtual right wheel speed
-- steering direction
+- motion direction text
+- `LOCK` button
+- `AUTO` button
+- virtual left and right wheel motion
 
-Controls:
+The camera overlay explicitly shows:
 
-- click a bounding box to lock onto a target
-- `A` returns to automatic selection
-- `S` toggles stop mode
-- `Q` quits
+- `YOLO: OBJECT DETECTION`
+- `SVSP: DIRECTION DETECTION`
 
-## Training Commands
+when `svsp.pt` is loaded and used.
 
-### 1. Collect images
+### Run demo
+
+```powershell
+python main.py demo --camera 0 --model yolov8n.pt
+```
+
+## SVSP Motion Model
+
+The project now supports a separate motion model named `SVSP`.
+
+Default path:
+
+- `models/svsp.pt`
+
+The first implemented version is a lightweight sequence classifier trained from bounding-box trajectories.
+
+It predicts:
+
+- `left`
+- `right`
+- `forward`
+- `backward`
+- `stationary`
+
+### Train SVSP
+
+```powershell
+python main.py train-svsp --output models/svsp.pt
+```
+
+## YOLO Detector Training
+
+YOLO is still trained separately from SVSP.
+
+Recommended workflow:
+
+1. collect images
+2. auto-label images
+3. correct labels
+4. train detector
+5. use trained detector weights in config
+
+### Collect images
 
 ```powershell
 python scripts/collect_data.py --out data/raw_images
 ```
 
-### 2. Auto-label the raw images
+### Auto-label images
 
 ```powershell
 python scripts/auto_label.py --images data/raw_images --out data/auto_dataset --classes person
 ```
 
-### 3. Review and fix labels
-
-Open the generated labels in a labelling tool and correct mistakes before training.
-
-### 4. Optional dataset preparation from VOC or COCO
-
-```powershell
-python scripts/prepare_dataset.py --format voc --src data/raw --out data/yolo_dataset --classes person --augment --multiplier 4
-```
-
-### 5. Fine-tune a model
+### Train YOLO
 
 ```powershell
 python main.py train data/auto_dataset/data.yaml --base-model yolov8n.pt --epochs 100 --name robot_target_model
 ```
 
-### 6. Point the app to the trained weights
-
-Update your config to use the new weights file, usually:
-
-```yaml
-vision:
-  model_path: models/trained/robot_target_model/weights/best.pt
-```
-
 ## API Endpoints
 
-Start the API:
+Start API:
 
 ```powershell
 python main.py api --mock
 ```
 
-Available endpoints:
+Core control endpoints:
 
 - `GET /api/v1/health`
 - `GET /api/v1/status`
@@ -246,9 +191,11 @@ Available endpoints:
 - `WS /api/v1/ws/video`
 - `GET /api/v1/snapshot`
 
-Swagger UI is available at:
+SVSP model endpoints:
 
-- `http://localhost:8000/docs`
+- `POST /api/v1/train/svsp`
+- `POST /api/v1/model/svsp/load`
+- `POST /api/v1/model/svsp/disable`
 
 ## Configuration
 
@@ -256,83 +203,56 @@ Main config file:
 
 - [`config/config.yaml`](./config/config.yaml)
 
-Important settings:
+Important config sections:
 
-- `vision.model_path`
-- `vision.target_class`
-- `vision.tracker`
-- `control.base_speed`
-- `control.pid.kp`
-- `control.pid.ki`
-- `control.pid.kd`
-- `serial.port`
-- `serial.mock`
+- `vision`
+- `control`
+- `serial`
+- `training`
+- `motion_model`
 
-Environment variables supported:
+Example SVSP config:
 
-- `SERIAL_PORT`
-- `CAMERA_ID`
-- `MOCK_SERIAL`
-- `API_HOST`
-- `API_PORT`
-- `LOG_LEVEL`
-
-## Hardware
-
-Typical hardware stack:
-
-- ESP32 DevKit
-- L298N motor driver
-- two DC motors with wheels
-- USB camera or onboard camera
-- host computer or SBC running Python
-
-Firmware location:
-
-- [`firmware/esp32_motor/esp32_motor.ino`](./firmware/esp32_motor/esp32_motor.ino)
-
-## Testing
-
-If your Python environment is healthy, run:
-
-```powershell
-pytest
+```yaml
+motion_model:
+  enabled: true
+  model_path: "models/svsp.pt"
+  sequence_length: 8
+  train_samples: 2000
+  epochs: 120
+  learning_rate: 0.15
 ```
 
-Or:
+## Important Limitation
 
-```powershell
-pytest tests/test_follower.py -v
-```
+The current SVSP model predicts direction from bounding-box sequences.
 
-## Current Status
+That means:
 
-What is already implemented:
+- it does not replace YOLO
+- it does not do gesture recognition
+- it does not yet detect an "open palm" lock gesture by itself
 
-- YOLO detection
-- tracking wrappers
-- target selection
-- locked target support in the shared vision pipeline
-- PID steering
-- differential motor control
-- API routes
-- demo simulator
-- dataset conversion
-- augmentation
-- training wrapper
-- auto-labelling bootstrap script
+Open-hand locking still needs a separate hand or pose model in a future step.
 
 ## Documentation
 
-Detailed project documentation is available in:
+Detailed docs:
 
 - [`documentation/PROJECT_OVERVIEW.md`](./documentation/PROJECT_OVERVIEW.md)
 - [`documentation/SYSTEM_FLOW.md`](./documentation/SYSTEM_FLOW.md)
 - [`documentation/TRAINING_GUIDE.md`](./documentation/TRAINING_GUIDE.md)
+- [`documentation/SVSP_MODEL.md`](./documentation/SVSP_MODEL.md)
+- [`documentation/SVSP_MODEL_DOCUMENTATION.md`](./documentation/SVSP_MODEL_DOCUMENTATION.md)
 
-## Notes
+## Summary
 
-- The detector can be pretrained or custom trained
-- The robot steering still depends on control code
-- For best accuracy, train on images captured from the real robot camera and environment
-- For multi-object following, train the exact object classes you want to select and follow
+Current project state:
+
+- `YOLO` for detection
+- `SVSP` for direction prediction
+- control code for robot steering
+- demo UI with lock and auto buttons
+- API support for training and loading SVSP
+
+This is now a two-model robot pipeline, not just a detector plus rules.

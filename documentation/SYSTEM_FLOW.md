@@ -2,217 +2,178 @@
 
 ## End-to-End Flow
 
-This document explains how the robot works from camera input to wheel output.
+This document explains the updated system flow with both `YOLO` and `SVSP`.
 
 ## Step 1: Start the Application
 
 The application starts from [`main.py`](../main.py).
 
-Depending on the selected mode:
+Modes:
 
-- `robot` starts the full loop
-- `demo` starts the simulator
-- `api` starts FastAPI
-- `train` starts model fine-tuning
+- `robot`
+- `api`
+- `demo`
+- `train`
+- `train-svsp`
+- `test-detect`
 
 ## Step 2: Load Configuration
 
 Configuration is loaded by [`robot/config.py`](../robot/config.py).
 
-This includes:
+Important sections:
 
-- model path
-- camera resolution
-- target class
-- tracker type
-- PID gains
-- serial settings
+- `vision`
+- `control`
+- `serial`
+- `training`
+- `motion_model`
 
 ## Step 3: Read Camera Frames
 
-The camera is opened by [`robot/vision/frame_pipeline.py`](../robot/vision/frame_pipeline.py).
+[`robot/vision/frame_pipeline.py`](../robot/vision/frame_pipeline.py) opens the camera and reads frames.
 
-The pipeline:
+The frame is resized to configured resolution.
 
-1. opens the camera
-2. reads a frame
-3. resizes it to configured width and height
+## Step 4: Run YOLO Detection
 
-## Step 4: Run Detection Model
+[`robot/vision/detector.py`](../robot/vision/detector.py) runs the YOLO model.
 
-[`robot/vision/detector.py`](../robot/vision/detector.py) loads the YOLO model and runs inference on the frame.
+YOLO produces:
 
-The detector returns a list of detections.
+- label
+- confidence
+- bounding box
 
-Each detection contains:
-
-- `label`
-- `confidence`
-- `x`
-- `y`
-- `w`
-- `h`
-- optional `track_id`
+This is the object detection stage only.
 
 ## Step 5: Track Detections
 
-If tracking is enabled, [`robot/vision/tracker.py`](../robot/vision/tracker.py) tries to keep the same ID across frames.
+[`robot/vision/tracker.py`](../robot/vision/tracker.py) keeps consistent target IDs across frames when tracking is enabled.
 
-Tracking is important because it helps the robot keep following the same selected target instead of switching to another nearby object.
-
-Supported trackers:
-
-- ByteTrack wrapper
-- DeepSORT wrapper
+This helps preserve target continuity.
 
 ## Step 6: Select the Active Target
 
-Target selection happens in [`robot/vision/frame_pipeline.py`](../robot/vision/frame_pipeline.py).
+[`robot/vision/frame_pipeline.py`](../robot/vision/frame_pipeline.py) selects which detection is the active target.
 
-The selection logic is:
+Selection rules:
 
-1. if a user-locked target exists, try to match it again
-2. prefer the same `track_id` when available
-3. otherwise match the same label by nearest centroid distance
-4. if no target is locked, pick the largest detection of the configured target class
+1. if target is locked, try to keep that target
+2. prefer the same `track_id`
+3. otherwise use same-label rematching by centroid distance
+4. if no target is locked, use the largest configured target class
 
-This is the key behavior for:
+## Step 7: Build Target History
 
-- following the selected person
-- following the selected object
-- avoiding jumping to another nearby detection
+Once a target is selected, its bbox history becomes available across frames.
 
-## Step 7: Compute Position Error
+This history is used by:
 
-Once the target is selected, the robot computes:
+- heuristic motion estimation
+- SVSP motion prediction
 
-- `target center x`
-- `frame center x`
-- `error = target center x - frame center x`
+## Step 8: Predict Direction
 
-Interpretation:
+There are now two possible motion sources.
 
-- negative error means target is left
-- positive error means target is right
-- near zero means target is centered
+### Option A: Heuristic motion
 
-## Step 8: Convert Error to Steering
+[`robot/vision/motion.py`](../robot/vision/motion.py) uses:
 
-[`robot/control/follower.py`](../robot/control/follower.py) sends the error into the PID controller.
+- horizontal center shift for `left/right`
+- bbox size change for `forward/backward`
 
-The PID controller:
+### Option B: SVSP model
 
-- smooths the response
-- avoids aggressive oscillation
-- gives a turn signal
+[`robot/vision/svsp.py`](../robot/vision/svsp.py) uses bounding-box history sequences and predicts:
 
-The follower also handles behavior modes:
+- `left`
+- `right`
+- `forward`
+- `backward`
+- `stationary`
 
-- follow
-- stop
-- search
-- manual
-- idle
+If `svsp.pt` is loaded, this becomes the active direction source.
 
-It also stops when the target is too close.
+## Step 9: Compute Steering
 
-## Step 9: Convert Steering to Wheel Speeds
+[`robot/control/follower.py`](../robot/control/follower.py) calculates horizontal error between:
 
-[`robot/control/motor.py`](../robot/control/motor.py) converts the turn signal into:
+- frame center
+- target center
 
-- `left wheel speed`
-- `right wheel speed`
+That error goes through the PID controller.
 
-Example:
+## Step 10: Convert to Wheel Commands
 
-- target moves left
-- turn signal causes left wheel to slow and right wheel to speed up
-- robot turns left
+[`robot/control/motor.py`](../robot/control/motor.py) converts steering into:
 
-Example:
+- left motor speed
+- right motor speed
 
-- target moves right
-- turn signal causes left wheel to speed up and right wheel to slow down
-- robot turns right
+Examples:
 
-## Step 10: Send Motor Commands
+- target is left: robot turns left
+- target is right: robot turns right
 
-[`robot/comms/serial_driver.py`](../robot/comms/serial_driver.py) sends the command to the ESP32 in the expected protocol format.
+The current robot steering still comes from control code, not from SVSP directly.
 
-If mock mode is enabled:
+SVSP adds movement understanding, while control still drives the wheels.
 
-- hardware is not required
-- commands are simulated
+## Step 11: Send Commands
 
-## Step 11: Visualize and Stream
+[`robot/comms/serial_driver.py`](../robot/comms/serial_driver.py) sends motor commands to ESP32 or logs them in mock mode.
 
-In `demo` mode:
+## Step 12: Display Output
 
-- bounding boxes are drawn on the frame
-- selected target is highlighted
-- virtual wheels are shown
-- steering direction is shown
+### In demo mode
 
-In `api` mode:
+The camera screen shows:
 
-- status is available through REST
-- live frames are available through WebSocket
+- YOLO object detection label
+- SVSP direction label when loaded
+- lock and auto buttons
+- target highlight
+- motion direction text
 
-## Robot Modes Explained
+### In API mode
 
-### Follow
+The status endpoint includes:
 
-The robot follows the selected target.
+- `motion`
+- `motion_source`
 
-### Stop
+## API Model Flow
 
-The robot outputs zero motor speed.
+New SVSP-related API routes:
 
-### Search
+- `POST /api/v1/train/svsp`
+- `POST /api/v1/model/svsp/load`
+- `POST /api/v1/model/svsp/disable`
 
-The robot rotates in place when the target is lost for longer than the timeout.
+These allow:
 
-### Manual
+- training the motion model
+- loading `svsp.pt`
+- disabling SVSP and returning to heuristic motion
 
-The robot ignores autonomous steering and accepts direct motor commands.
+## Why This Is a Better Architecture
 
-### Idle
+The updated flow separates concerns cleanly:
 
-The robot waits without active pursuit.
+- YOLO specializes in detection
+- SVSP specializes in direction prediction
+- control code specializes in wheel steering
 
-## Why This Is Not Model-Only
+This makes the system easier to improve over time.
 
-Even if the detector is custom trained, the system still needs control logic.
+## Current Limitation
 
-Reason:
+Open-hand gesture lock is still not implemented as an AI stage.
 
-- a detector tells where the target is
-- it does not decide wheel speed by itself
+That requires another model such as:
 
-The movement behavior comes from the combination of:
-
-- trained detector
-- target tracking
-- target selection
-- PID control
-- motor conversion
-
-## Failure and Recovery Cases
-
-### No target detected
-
-- brief loss: stop
-- longer loss: search
-
-### Target too close
-
-- stop for safety
-
-### Multiple detections
-
-- locked target is preferred
-- otherwise largest configured class is selected
-
-### Serial disconnected
-
-- mock or degraded operation continues depending on setup
+- hand detector
+- pose detector
+- gesture classifier
