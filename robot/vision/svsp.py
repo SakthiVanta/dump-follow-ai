@@ -115,6 +115,8 @@ class SVSPMotionPredictor:
         self._history: deque[np.ndarray] = deque(maxlen=model.sequence_length)
         self._current_track: Optional[int] = None
         self._current_label: Optional[str] = None
+        self.last_confidence: float = 0.0
+        self.last_label: str = "stationary"
 
     def reset(self) -> None:
         self._history.clear()
@@ -124,6 +126,8 @@ class SVSPMotionPredictor:
     def update(self, target: Optional[Detection]) -> MotionEstimate:
         if target is None:
             self.reset()
+            self.last_confidence = 0.0
+            self.last_label = "stationary"
             return MotionEstimate()
 
         if self._should_reset(target):
@@ -134,12 +138,16 @@ class SVSPMotionPredictor:
         self._history.append(_bbox_vector(target, self._frame_width, self._frame_height))
 
         if len(self._history) < self._model.sequence_length:
+            self.last_confidence = 0.0
+            self.last_label = "stationary"
             return MotionEstimate()
 
         X = np.asarray([_sequence_to_features(list(self._history))], dtype=np.float64)
         probs = self._model.predict_proba(X)[0]
         label = SVSP_LABELS[int(np.argmax(probs))]
         confidence = float(np.max(probs))
+        self.last_confidence = confidence
+        self.last_label = label
         horizontal = label if label in {"left", "right"} else "stationary"
         depth = label if label in {"forward", "backward"} else "stationary"
         summary = label if label != "stationary" else "stationary"

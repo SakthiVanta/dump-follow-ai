@@ -100,6 +100,19 @@ class RobotMeta(BaseModel):
     log_level: str = "INFO"
 
 
+class ActiveLearningConfig(BaseModel):
+    enabled: bool = True
+    db_path: str = "data/labels.db"
+    frames_dir: str = "data/review_frames"
+    model_path: str = "models/tiny_nn.pkl"
+    confidence_threshold: float = 0.6   # below this → goes to review queue
+    sample_rate: float = 0.05           # fraction of high-conf frames saved
+    retrain_threshold: int = 20         # new confirmed labels before retraining
+    retrain_epochs: int = 300
+    cooldown_s: float = 0.5             # min seconds between frame saves
+    patch_size: int = 64                # saved image size in pixels
+
+
 class RobotConfig(BaseModel):
     robot: RobotMeta = Field(default_factory=RobotMeta)
     vision: VisionConfig = Field(default_factory=VisionConfig)
@@ -110,6 +123,7 @@ class RobotConfig(BaseModel):
     api: APIConfig = Field(default_factory=APIConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     motion_model: MotionModelConfig = Field(default_factory=MotionModelConfig)
+    active_learning: ActiveLearningConfig = Field(default_factory=ActiveLearningConfig)
 
 
 # ---------------------------------------------------------------------------

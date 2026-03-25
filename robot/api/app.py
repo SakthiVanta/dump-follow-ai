@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from robot.api.routes import control, model, status, video
+from robot.api.routes import control, model, status, video, review
 from robot.api.state import RobotState
 from robot.config import get_config
 from robot.logger import logger, setup_logger
@@ -56,5 +56,6 @@ def create_app(mock: bool = False) -> FastAPI:
     app.include_router(control.router, prefix="/api/v1", tags=["control"])
     app.include_router(model.router,   prefix="/api/v1", tags=["model"])
     app.include_router(video.router,   prefix="/api/v1", tags=["video"])
+    app.include_router(review.router,  tags=["review"])  # mounts /review + /api/v1/review/*
 
     return app

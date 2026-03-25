@@ -179,9 +179,11 @@ def train_svsp(output: str, samples: int, sequence_length: int, epochs: int) -> 
 @click.option("--conf", default=0.4, type=float, help="Detection confidence threshold")
 @click.option("--save", default=None, help="Save output video to this path (.avi)")
 @click.option("--all-objects", is_flag=True, help="Detect all 80 COCO classes, not just person")
+@click.option("--review-port", default=0, type=int, help="Embed review web UI on this port (0 = disabled, run 'api' command separately)")
 def demo(
     camera: int, model: str, video: Optional[str],
-    conf: float, save: Optional[str], all_objects: bool
+    conf: float, save: Optional[str], all_objects: bool,
+    review_port: int,
 ) -> None:
     """Interactive robot follower simulator.
 
@@ -199,16 +201,73 @@ def demo(
     """
     import cv2, time, math
     import numpy as np
-    from robot.config import ControlConfig, MotorConfig, PIDConfig
+    from robot.config import ControlConfig, MotorConfig, PIDConfig, get_config
     from robot.vision.detector import Detection, YOLODetector
     from robot.control.follower import PersonFollower, RobotMode
     from robot.control.pid import PIDController
+    from robot.learning.label_store import LabelStore
+    from robot.learning.collector import FrameCollector
+    from robot.learning.active_trainer import ActiveTrainer
 
     target_classes = None if all_objects else ["person"]
     detector = YOLODetector(model_path=model, conf_threshold=conf,
                             target_classes=target_classes)
     follower = PersonFollower(ControlConfig(), MotorConfig(), PIDConfig())
     follower.mode = RobotMode.FOLLOW
+
+    # ── Active learning setup ──────────────────────────────────────────
+    al_cfg = get_config().active_learning
+    _label_store = LabelStore(db_path=al_cfg.db_path)
+    _collector = FrameCollector(
+        store=_label_store,
+        save_dir=al_cfg.frames_dir,
+        confidence_threshold=al_cfg.confidence_threshold,
+        sample_rate=al_cfg.sample_rate,
+        patch_size=al_cfg.patch_size,
+        cooldown_s=al_cfg.cooldown_s,
+    )
+    _active_trainer = ActiveTrainer(
+        store=_label_store,
+        model_path=al_cfg.model_path,
+        retrain_threshold=al_cfg.retrain_threshold,
+        epochs=al_cfg.retrain_epochs,
+    )
+    _tiny_nn = _active_trainer.model
+    _svsp_to_nn = {
+        "left": "LEFT", "right": "RIGHT",
+        "forward": "FORWARD", "backward": "FORWARD",
+        "stationary": "STOP",
+    }
+    click.echo(
+        f"  Active learning: DB={al_cfg.db_path}  "
+        f"threshold={al_cfg.confidence_threshold}  "
+        f"sample_rate={al_cfg.sample_rate}"
+    )
+
+    # ── Start review web server in background thread ───────────────────
+    if review_port > 0:
+        import threading, uvicorn
+        from robot.api.app import create_app
+
+        _review_app = create_app(mock=True)
+        # Share the same LabelStore + trainer via app state
+        _review_app.state.robot.label_store  = _label_store
+        _review_app.state.robot.collector    = _collector
+        _review_app.state.robot.active_trainer = _active_trainer
+
+        _uv_cfg = uvicorn.Config(
+            _review_app, host="0.0.0.0", port=review_port,
+            log_level="error", loop="asyncio",
+        )
+        _uv_server = uvicorn.Server(_uv_cfg)
+
+        def _serve():
+            import asyncio
+            asyncio.run(_uv_server.serve())
+
+        _thread = threading.Thread(target=_serve, daemon=True)
+        _thread.start()
+        click.echo(f"  Review UI → http://localhost:{review_port}/review")
 
     source = video if video else camera
     cap = cv2.VideoCapture(source)
@@ -302,6 +361,35 @@ def demo(
             cmd = follower.update(target, fw, fh)
             state["motion"] = motion_tracker.update(target)
 
+            # ── Active learning: collect frame ────────────────────────
+            if target is not None:
+                # Always use FeatureNN confidence to decide whether to collect.
+                # SVSP has high synthetic-data confidence (>0.9) so using it
+                # would block collection. FeatureNN starts untrained (~0.25
+                # confidence) so it correctly flags most frames for review.
+                _feats = _collector._extract_features(target, frame.shape)
+                _nn_action, _nn_conf = _tiny_nn.predict_action(_feats)
+
+                # Use SVSP label as the suggested action (higher quality)
+                svsp = motion_tracker if hasattr(motion_tracker, "last_confidence") else None
+                if svsp and svsp.last_confidence > 0:
+                    _action = _svsp_to_nn.get(svsp.last_label, "STOP")
+                    _src    = "svsp"
+                else:
+                    _action = _nn_action
+                    _src    = "tiny_nn"
+
+                _collector.maybe_collect(frame, target, _action, _nn_conf, _src)
+                # Check if enough new labels to retrain
+                new_model = _active_trainer.check_and_retrain()
+                if new_model is not None:
+                    _tiny_nn = new_model
+                    click.echo(
+                        f"\n  [active-learning] Retrained! "
+                        f"acc={_active_trainer.last_accuracy:.1%}  "
+                        f"run #{_active_trainer.retrain_count}"
+                    )
+
             # ── Animate wheel offsets ─────────────────────────────────
             state["wheel_l"] = (state["wheel_l"] + cmd.left  * 0.08) % 20
             state["wheel_r"] = (state["wheel_r"] + cmd.right * 0.08) % 20
@@ -333,7 +421,8 @@ def demo(
                 f"\r  FPS {fps:4.1f} | {follower.mode.value:<14} | "
                 f"target: {'%-12s' % (target.label if target else 'NONE')} | "
                 f"motion={state['motion'].summary if state['motion'] else 'stationary':<18} | "
-                f"err={err:+6.1f}px | L={cmd.left:+4d} R={cmd.right:+4d}",
+                f"err={err:+6.1f}px | L={cmd.left:+4d} R={cmd.right:+4d} | "
+                f"collected={_collector.total_collected}",
                 nl=False,
             )
 

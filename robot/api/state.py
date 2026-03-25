@@ -16,6 +16,10 @@ from robot.vision.svsp import (
     load_svsp_model,
     train_svsp_model,
 )
+from robot.learning.label_store import LabelStore
+from robot.learning.collector import FrameCollector
+from robot.learning.active_trainer import ActiveTrainer
+from robot.learning.tiny_nn import FeatureNN
 
 
 class RobotState:
@@ -39,6 +43,25 @@ class RobotState:
         self._cmd_lock = asyncio.Lock()
         self.motion_estimator = TargetMotionEstimator()
         self.svsp_predictor: Optional[SVSPMotionPredictor] = None
+
+        # Active learning
+        al = config.active_learning
+        self.label_store = LabelStore(db_path=al.db_path)
+        self.collector = FrameCollector(
+            store=self.label_store,
+            save_dir=al.frames_dir,
+            confidence_threshold=al.confidence_threshold,
+            sample_rate=al.sample_rate,
+            patch_size=al.patch_size,
+            cooldown_s=al.cooldown_s,
+        )
+        self.active_trainer = ActiveTrainer(
+            store=self.label_store,
+            model_path=al.model_path,
+            retrain_threshold=al.retrain_threshold,
+            epochs=al.retrain_epochs,
+        )
+        self.tiny_nn: FeatureNN = self.active_trainer.model
 
     async def startup(self) -> None:
         ok = self.serial.connect()
@@ -76,6 +99,46 @@ class RobotState:
         self.motion_source = "heuristic"
         self.last_motion = self.motion_estimator.update(target)
         return self.last_motion
+
+    def collect_frame(self, frame, target) -> None:
+        """
+        Save frame + features into the active-learning review queue if needed.
+
+        Call once per processed frame from the robot loop after update_motion().
+        Confidence is read from svsp_predictor.last_confidence when available,
+        otherwise from tiny_nn inference.
+        """
+        if not self.config.active_learning.enabled or target is None:
+            return
+
+        # Determine action + confidence from whichever predictor is active
+        if self.svsp_predictor is not None and self.svsp_predictor.last_confidence > 0:
+            action_str = self.svsp_predictor.last_label.upper()
+            confidence = self.svsp_predictor.last_confidence
+            source = "svsp"
+        else:
+            # Use TinyNN on current features if we have them
+            features = self.collector._extract_features(target, frame.shape)
+            action_str, confidence = self.tiny_nn.predict_action(features)
+            source = "tiny_nn"
+
+        # Map SVSP labels (left/right/forward/backward/stationary) → NN actions
+        _svsp_to_action = {
+            "left": "LEFT", "right": "RIGHT",
+            "forward": "FORWARD", "backward": "FORWARD",
+            "stationary": "STOP",
+        }
+        action_str = _svsp_to_action.get(action_str.lower(), action_str.upper())
+        if action_str not in ("LEFT", "RIGHT", "FORWARD", "STOP"):
+            action_str = "STOP"
+
+        self.collector.maybe_collect(
+            frame=frame,
+            target=target,
+            predicted_action=action_str,
+            confidence=confidence,
+            source=source,
+        )
 
     def train_svsp(self) -> SVSPTrainingResult:
         result = train_svsp_model(self.config.motion_model)

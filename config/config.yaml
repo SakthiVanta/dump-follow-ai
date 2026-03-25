@@ -72,3 +72,18 @@ motion_model:
   epochs: 120
   learning_rate: 0.15
   synthetic_noise: 0.03
+
+# ── Active Learning ──────────────────────────────────────────────────────────
+# Frames with confidence < threshold go to the review queue at localhost:8000/review
+# Human confirms labels → auto-retrains the Tiny NN after `retrain_threshold` new labels
+active_learning:
+  enabled: true
+  db_path: "data/labels.db"
+  frames_dir: "data/review_frames"
+  model_path: "models/tiny_nn.pkl"
+  confidence_threshold: 0.6    # below this → show in review UI
+  sample_rate: 0.3             # save 30% of high-confidence frames (tune down after enough data)
+  retrain_threshold: 20        # retrain after this many new confirmed labels
+  retrain_epochs: 300
+  cooldown_s: 0.5              # min seconds between saves (avoid flood)
+  patch_size: 64               # saved patch size in pixels
